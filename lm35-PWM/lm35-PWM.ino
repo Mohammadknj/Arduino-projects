@@ -79,16 +79,32 @@ LiquidCrystal lcd(rsPin, enPin, d4Pin, d5Pin, d6Pin, d7Pin);
 // تعریف پین ها و متغیرهای دیگر پروژه
 const int lm35Pin = A0;      
 const int fanPWMPin = 9;     
-
+float temperatureC = 0;
+int fanPWMValue = 0;
 const int minTemp = 20;     
 const int maxTemp = 50;     
-
 // متغیرها برای ساعت شمار فن
-unsigned long fanOnTimeSeconds = 0; // زمان روشن بودن فن بر حسب ثانیه
-bool wasFanOnLastLoop = false;      // وضعیت فن در حلقه قبلی (برای تشخیص تغییر وضعیت)
-
+unsigned long totalDeviceOnTimeSeconds = 0; // زمان روشن بودن فن اول بر حسب ثانیه
+unsigned long fanOnTimeSeconds = 0; // زمان روشن بودن فن دوم بر حسب ثانیه
 // متغیر برای اندازه گیری زمان سپری شده در هر حلقه
 unsigned long previousMillis = 0;
+unsigned long currentMillis = 0;
+unsigned long loopDuration = 0;
+
+// متغیرهای جدید برای نمایش غیرمسدودکننده پیام
+unsigned long messageDisplayStartTime = 0;
+bool showMessage = false;
+const unsigned long messageDuration = 2000; // مدت زمان نمایش پیام (2 ثانیه)
+
+const char* fanStatusMessages[] = {
+  " Now it's coool   Here you are  ",        // این پیام با ایندکس 0 فراخوانی می شود
+  "It's a bit hotttLet's cool down!",         // این پیام با ایندکس 1 فراخوانی می شود
+  "Fan at MAX speed just god helps"   // این پیام با ایندکس 2 فراخوانی می شود
+};
+
+// متغیر جدید برای ذخیره وضعیت قبلی فن
+int previousFanState = -1; // -1 به معنی وضعیت نامشخص در ابتدا
+int currentFanState = -1;
 
 void setup() {
   pinMode(fanPWMPin, OUTPUT);
@@ -107,62 +123,99 @@ void setup() {
 }
 
 void loop() {
-  // 1. خواندن دما و کنترل فن
-  float temperatureC = (analogRead(lm35Pin) * (5.0 / 1024.0)) * 100.0;
-  int fanPWMValue = 0;
-  bool isFanCurrentlyOn = false;
+
+  //  محاسبه زمان سپری شده در این حلقه
+  currentMillis = millis();
+  loopDuration = currentMillis - previousMillis;
+  previousMillis = currentMillis;
+
+  //  خواندن دما و کنترل فن
+  temperatureC = analogRead(lm35Pin) * 0.488;
+  fanPWMValue = 0;
 
   if (temperatureC < minTemp) {
     fanPWMValue = 0;
-    isFanCurrentlyOn = false;
+    currentFanState = 0;
   } else if (temperatureC >= minTemp && temperatureC <= maxTemp) {
     fanPWMValue = map(temperatureC, minTemp, maxTemp, 0, 255);
-    isFanCurrentlyOn = true;
+    currentFanState = 1;
   } else { // temperatureC > maxTemp
     fanPWMValue = 255;
-    isFanCurrentlyOn = true;
+    currentFanState = 2;
   }
   
   analogWrite(fanPWMPin, fanPWMValue);
 
-  // 2. محاسبه زمان سپری شده در این حلقه
-  unsigned long currentMillis = millis();
-  unsigned long loopDuration = currentMillis - previousMillis;
-  previousMillis = currentMillis;
+if (currentFanState != previousFanState) {
+    showMessage = true;
+    messageDisplayStartTime = currentMillis;
+    lcd.clear(); // پاک کردن صفحه برای پیام جدید
+  }
 
-  // 3. منطق ساعت شمار فن با شرط صفر شدن
-  if (temperatureC < minTemp) {
+ // به روزرسانی وضعیت قبلی برای حلقه بعدی
+  previousFanState = currentFanState;
+
+  //  منطق ساعت شمار فن با شرط صفر شدن
+  // if(temperatureC < minTemp)
+  // temperatureC=/1;
+  if (fanPWMValue == 0) {
     // دما کمتر از 20 درجه: ساعت شمار فن صفر شود
+    // lcd.print("s");
     fanOnTimeSeconds = 0;
   } else {
     // دما 20 درجه یا بیشتر: ساعت شمار فن افزایش یابد
     fanOnTimeSeconds += loopDuration / 1000;
   }
-  
+
+if (showMessage && (currentMillis - messageDisplayStartTime < messageDuration)) {
+      // اگر هنوز در بازه 2 ثانیه نمایش پیام هستیم
+      lcd.setCursor(0, 0);
+      // lcd.print(fanStatusMessages[currentFanState]);
+      // if the 2nd half didn't print:
+      for(int i=0;i<32;i++){
+        if(i == 16)
+          lcd.setCursor(0, 1);
+        lcd.print(fanStatusMessages[currentFanState][i]);
+      }
+  }else {
+      // اگر زمان نمایش پیام به پایان رسیده یا پیامی برای نمایش نیست
+      if (showMessage) { // فقط یک بار پس از اتمام زمان پیام
+          lcd.clear();
+          showMessage = false;
+      }
+ // نمایش دما روی LCD
+  lcd.setCursor(0, 0);
+  lcd.print("Temp: ");
+  lcd.print(temperatureC, 2); // نمایش دما با یک رقم اعشار
+  lcd.print((char)223);       // کاراکتر درجه (°)
+  lcd.print("C");           // برای پاک کردن هر چیز قبلی
+
   // 4. محاسبه زمان کلی دستگاه از روی millis()
-  unsigned long totalDeviceOnTimeSeconds = currentMillis / 1000;
+  totalDeviceOnTimeSeconds = currentMillis / 1000;
 
   // 5. نمایش اطلاعات روی LCD
   // نمایش زمان روشن بودن دستگاه (ساعت اول)
-  lcd.setCursor(0, 0); 
-  lcd.print("Dev ON: ");
+  lcd.setCursor(0, 1);
   lcd.print(totalDeviceOnTimeSeconds / 3600);         // ساعت
-  lcd.print("h ");
+  lcd.print(":");
   lcd.print((totalDeviceOnTimeSeconds % 3600) / 60);  // دقیقه
-  lcd.print("m ");
+  lcd.print(":");
   lcd.print(totalDeviceOnTimeSeconds % 60);           // ثانیه
-  lcd.print("s ");
+  
+  // setting distance between 2 clocks
+  if((totalDeviceOnTimeSeconds / 3600) < 10 && (fanOnTimeSeconds / 3600) < 10)
+    lcd.print("  ");
+  else if((totalDeviceOnTimeSeconds / 3600) >= 10 && (fanOnTimeSeconds / 3600) < 10)
+    lcd.print(" ");
 
   // نمایش زمان روشن بودن فن (ساعت دوم)
-  lcd.setCursor(0, 1);
-  lcd.print("Fan ON: ");
   lcd.print(fanOnTimeSeconds / 3600);         // ساعت
-  lcd.print("h ");
+  lcd.print(":");
   lcd.print((fanOnTimeSeconds % 3600) / 60);  // دقیقه
-  lcd.print("m ");
+  lcd.print(":");
   lcd.print(fanOnTimeSeconds % 60);           // ثانیه
-  lcd.print("s ");
-
+  // lcd.print(loopDuration);
+  }
   // 6. نمایش دما و PWM روی سریال مانیتور (برای اشکال زدایی)
   Serial.print("Temp: ");
   Serial.print(temperatureC);
