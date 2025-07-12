@@ -19,7 +19,7 @@ const int fanPWMPin = 9;
 float temperatureC = 0;
 int fanPWMValue = 0;
 const int minTemp = 20;
-const int maxTemp = 50;
+const int maxTemp = 40;//////////
 const int buzzerPin = 6;
 // متغیرها برای ساعت شمار فن
 unsigned long totalDeviceOnTimeSeconds = 0;  // زمان روشن بودن فن اول بر حسب ثانیه
@@ -45,11 +45,14 @@ const char* fanStatusMessages[] = {
 int previousFanState = -1;  // -1 به معنی وضعیت نامشخص در ابتدا
 int currentFanState = -1;
 
+unsigned long lastStateChangeTime = 0;
 unsigned long lastBeepTime = 0;
 const unsigned long beepDuration = 200;  // مدت زمان هر بوق (200 میلی ثانیه)
 int beepsToMake = 0;                     // تعداد بوق های باقی مانده
-bool isBeeping = false;                  // پرچم برای فعال بودن بوق زدن
-
+bool isWaitingForBeep = false;                  // پرچم برای فعال بودن بوق زدن
+bool isBeeping = false;////
+int stateAtStartOfWait = -1; // وضعیت فن در لحظه شروع انتظار
+bool isBuzzerOn = false;
 // تابع کمکی برای زمان بندی غیرمسدودکننده
 bool isTimeUp(unsigned long& lastExecutionTime, unsigned long interval) {
   if (millis() - lastExecutionTime >= interval) {
@@ -59,10 +62,28 @@ bool isTimeUp(unsigned long& lastExecutionTime, unsigned long interval) {
   return false;
 }
 
+float findTemp(){
+  int sum = 0;
+  for(int i=0; i<200; i++){
+    sum += analogRead(lm35Pin);
+  }
+  return sum / 200 * 0.488;
+}
+
+void findBeepNum(){
+  float finalTemperatureC = findTemp();
+    beepsToMake = 0;
+    if (finalTemperatureC >= minTemp && finalTemperatureC < maxTemp) {
+      beepsToMake = 1;
+    } else if (finalTemperatureC >= maxTemp) {
+      beepsToMake = 2;
+    }
+}
 // متغیرهای جداگانه برای هر تایمر
 unsigned long lastDisplayUpdateTime = 0;
 unsigned long lastSerialPrintTime = 0;
 
+// int fanStateInLastBeep =
 void setup() {
   pinMode(fanPWMPin, OUTPUT);
   analogWrite(fanPWMPin, 0);
@@ -89,7 +110,9 @@ void loop() {
   previousMillis = currentMillis;
 
   //  خواندن دما و کنترل فن
-  temperatureC = analogRead(lm35Pin) * 0.488;
+  /////////
+  temperatureC = findTemp();
+  // temperatureC = analogRead(lm35Pin) * 0.488;
   fanPWMValue = 0;
 
   if (temperatureC < minTemp) {
@@ -118,36 +141,119 @@ void loop() {
       // fanOnTimeSeconds = messageDuration/2;
     }
     if (currentFanState > 0) {        // بوق زدن فقط برای حالت های ON
-      beepsToMake = currentFanState;  // تعداد بوق ها برابر با وضعیت فعلی (1 یا 2)
-      isBeeping = true;
+      isWaitingForBeep = true;
+      lastStateChangeTime = currentMillis;
+      stateAtStartOfWait = currentFanState;
+      // beepsToMake = currentFanState;  // تعداد بوق ها برابر با وضعیت فعلی (1 یا 2)///////
     } else {
       fanOnTimeSeconds = 0;
     }
   }
 
   // به روزرسانی وضعیت قبلی برای حلقه بعدی
-  previousFanState = currentFanState;
 
   if (currentFanState == 1 || currentFanState == 2) {
     fanOnTimeSeconds += loopDuration;
   }
 
-  if (isBeeping) {
-    if (isTimeUp(lastBeepTime, beepDuration)) {
-      if (digitalRead(buzzerPin) == LOW) {
-        // اگر بازر خاموش است، آن را روشن کن
-        digitalWrite(buzzerPin, HIGH);
-      } else {
-        // اگر بازر روشن است، آن را خاموش کن و تعداد بوق ها را کم کن
-        digitalWrite(buzzerPin, LOW);
-        beepsToMake--;
-        if (beepsToMake <= 0) {
-          // اگر بوق ها تمام شدند، فرآیند را متوقف کن
-          isBeeping = false;
-        }
+  ////
+  if (isWaitingForBeep) {
+    if (currentFanState != stateAtStartOfWait) {
+      lastStateChangeTime = currentMillis;
+      stateAtStartOfWait = currentFanState;
+    }
+    
+    if (isTimeUp(lastStateChangeTime, 2000)) {
+      // 3. پس از 2 ثانیه پایداری، تعداد بوق‌ها را تعیین کن
+      switch (currentFanState) {
+        case 0:
+          beepsToMake = 0; // بوق نزن
+          break;
+        case 1:
+          beepsToMake = 1; // یک بوق بزن
+          break;
+        case 2:
+          beepsToMake = 2; // دو بوق بزن
+          break;
       }
+      isBeeping = true; // شروع به بوق زدن
+      isWaitingForBeep = false;
     }
   }
+  if (isBeeping) {
+    if (isTimeUp(lastBeepTime, 200)) { // هر 200 میلی ثانیه
+      if (isBuzzerOn) {
+        // بازر روشن است، خاموشش کن و تعداد بوق را کم کن
+        noTone(buzzerPin);
+        // digitalWrite(buzzerPin, LOW);
+        isBuzzerOn = false;
+        beepsToMake--;
+      } else {
+        // بازر خاموش است، روشنش کن
+        tone(buzzerPin, 1000);
+        // digitalWrite(buzzerPin, HIGH);
+        isBuzzerOn = true;
+      }
+    }
+    // اگر تعداد بوق‌ها تمام شد، بوق زدن را متوقف کن
+    if (beepsToMake <= 0 && !isBuzzerOn) {
+      isBeeping = false;
+    }
+  }
+
+
+
+  /////
+//   if (isWaitingForBeep && isTimeUp(lastStateChangeTime, 3000)) {
+// // 3. پس از گذشت 1 ثانیه، وضعیت را دوباره بررسی کن
+//     if(beepsToMake < 1){
+//       findBeepNum();
+//       Serial.print("beepsToMake: ");Serial.println(beepsToMake);
+//     }
+//     // if(currentFanState != beepsToMake)
+//     Serial.print("jdcnjdf ");
+//     if (isTimeUp(lastBeepTime, beepDuration)) {
+//       if (digitalRead(buzzerPin) == LOW) {
+//         // اگر بازر خاموش است، آن را روشن کن
+//         digitalWrite(buzzerPin, HIGH);
+//         Serial.println("6 is On");
+//       } else {
+//         // اگر بازر روشن است، آن را خاموش کن و تعداد بوق ها را کم کن
+//         digitalWrite(buzzerPin, LOW);
+//         beepsToMake--;
+//         Serial.println("beep decreased");
+//         if (beepsToMake <= 0) {
+//           // اگر بوق ها تمام شدند، فرآیند را متوقف کن
+//         Serial.println("isWaitingForBeep falsed");
+//           isWaitingForBeep = false;
+//           beepsToMake = 0; /////
+//         }
+//       }
+//     }
+//     // 5. پرچم انتظار را به false تغییر بده تا بوق دوباره تکرار نشود
+//     // isWaitingForBeep = false;
+//   }
+
+  previousFanState = currentFanState;
+
+
+  // if (isBeeping) {
+  //   if (isTimeUp(lastBeepTime, beepDuration)) {
+  //     if (digitalRead(buzzerPin) == LOW) {
+  //       // اگر بازر خاموش است، آن را روشن کن
+  //       digitalWrite(buzzerPin, HIGH);
+  //     } else {
+  //       // اگر بازر روشن است، آن را خاموش کن و تعداد بوق ها را کم کن
+  //       digitalWrite(buzzerPin, LOW);
+  //       beepsToMake--;
+  //       if (beepsToMake <= 0) {
+  //         // اگر بوق ها تمام شدند، فرآیند را متوقف کن
+  //         isBeeping = false;
+  //         beepsToMake = 0; /////
+  //       }
+  //     }
+  //   }
+  // }
   if (isTimeUp(lastDisplayUpdateTime, 100)) {
     if (showMessage && (currentMillis - messageDisplayStartTime < messageDuration)) {
       // اگر هنوز در بازه 2 ثانیه نمایش پیام هستیم
