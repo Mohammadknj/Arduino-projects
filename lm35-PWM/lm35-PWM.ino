@@ -87,6 +87,7 @@ const int buzzerPin = 6;
 // متغیرها برای ساعت شمار فن
 unsigned long totalDeviceOnTimeSeconds = 0;  // زمان روشن بودن فن اول بر حسب ثانیه
 unsigned long fanOnTimeSeconds = 0;          // زمان روشن بودن فن دوم بر حسب ثانیه
+unsigned long fanNewOnTimeSeconds = 0;  // زمان روشن بودن فن اول بر حسب ثانیه
 // متغیر برای اندازه گیری زمان سپری شده در هر حلقه
 unsigned long previousMillis = 0;
 unsigned long currentMillis = 0;
@@ -171,10 +172,20 @@ void loop() {
     showMessage = true;
     messageDisplayStartTime = currentMillis;
     lcd.clear();  // پاک کردن صفحه برای پیام جدید
+// if((previousFanState == 0 || previousFanState == -1) & (currentFanState == 1 || currentFanState == 2)){
+// fanOnTimeSeconds = messageDuration;
 
+// }
+if(previousFanState == -1 & (currentFanState == 1 || currentFanState == 2)){
+fanOnTimeSeconds = currentMillis;
+}else if(previousFanState == 0 & (currentFanState == 1 || currentFanState == 2)){
+fanOnTimeSeconds = messageDuration;
+}
     if (currentFanState > 0) {        // بوق زدن فقط برای حالت های ON
       beepsToMake = currentFanState;  // تعداد بوق ها برابر با وضعیت فعلی (1 یا 2)
       isBeeping = true;
+    }else{
+      fanOnTimeSeconds = 0;
     }
   }
 
@@ -184,13 +195,16 @@ void loop() {
   //  منطق ساعت شمار فن با شرط صفر شدن
   // if(temperatureC < minTemp)
   // temperatureC=/1;
-  if (fanPWMValue == 0) {
-    // دما کمتر از 20 درجه: ساعت شمار فن صفر شود
-    // lcd.print("s");
-    fanOnTimeSeconds = 0;
-  } else {
-    // دما 20 درجه یا بیشتر: ساعت شمار فن افزایش یابد
-    fanOnTimeSeconds += loopDuration / 1000;
+  // if (fanPWMValue == 0) {
+  //   // دما کمتر از 20 درجه: ساعت شمار فن صفر شود
+  //   // lcd.print("s");
+  //   fanOnTimeSeconds = 0;
+  // } else {
+  //   // دما 20 درجه یا بیشتر: ساعت شمار فن افزایش یابد
+  //   fanOnTimeSeconds += loopDuration / 1000;
+  // }
+  if(currentFanState == 1 || currentFanState == 2){
+    fanOnTimeSeconds += loopDuration;
   }
 
   if (isBeeping) {
@@ -237,7 +251,11 @@ void loop() {
 
       // 4. محاسبه زمان کلی دستگاه از روی millis()
       totalDeviceOnTimeSeconds = currentMillis / 1000;
+      fanNewOnTimeSeconds=fanOnTimeSeconds / 1000;
+      // if(millis() == 10000){
+      // fanNewOnTimeSeconds=fanOnTimeSeconds / 1000;
 
+      // }
       // 5. نمایش اطلاعات روی LCD
       // نمایش زمان روشن بودن دستگاه (ساعت اول)
       lcd.setCursor(0, 1);
@@ -248,17 +266,16 @@ void loop() {
       lcd.print(totalDeviceOnTimeSeconds % 60);  // ثانیه
 
       // setting distance between 2 clocks
-      if ((totalDeviceOnTimeSeconds / 3600) < 10 && (fanOnTimeSeconds / 3600) < 10)
+      if ((totalDeviceOnTimeSeconds / 3600) < 10 && (fanNewOnTimeSeconds / 3600) < 10)
         lcd.print("  ");
-      else if ((totalDeviceOnTimeSeconds / 3600) >= 10 && (fanOnTimeSeconds / 3600) < 10)
+      else if ((totalDeviceOnTimeSeconds / 3600) >= 10 && (fanNewOnTimeSeconds / 3600) < 10)
         lcd.print(" ");
-
       // نمایش زمان روشن بودن فن (ساعت دوم)
-      lcd.print(fanOnTimeSeconds / 3600);  // ساعت
+      lcd.print(fanNewOnTimeSeconds / 3600);  // ساعت
       lcd.print(":");
-      lcd.print((fanOnTimeSeconds % 3600) / 60);  // دقیقه
+      lcd.print((fanNewOnTimeSeconds % 3600) / 60);  // دقیقه
       lcd.print(":");
-      lcd.print(fanOnTimeSeconds % 60);  // ثانیه
+      lcd.print(fanNewOnTimeSeconds % 60);  // ثانیه
       // lcd.print(loopDuration);
     }
   }
@@ -269,7 +286,7 @@ void loop() {
     Serial.print("C | Fan PWM: ");
     Serial.print(fanPWMValue);
     Serial.print(" | Fan On Time: ");
-    Serial.print(fanOnTimeSeconds);
+    Serial.print(fanNewOnTimeSeconds);
     Serial.println("s");
   }
   // تأخیر کوتاه برای جلوگیری از نوسانات شدید نمایش
