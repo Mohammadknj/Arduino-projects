@@ -53,6 +53,7 @@ bool isWaitingForBeep = false;                  // پرچم برای فعال ب
 bool isBeeping = false;////
 int stateAtStartOfWait = -1; // وضعیت فن در لحظه شروع انتظار
 bool isBuzzerOn = false;
+
 // تابع کمکی برای زمان بندی غیرمسدودکننده
 bool isTimeUp(unsigned long& lastExecutionTime, unsigned long interval) {
   if (millis() - lastExecutionTime >= interval) {
@@ -137,14 +138,11 @@ void loop() {
       fanOnTimeSeconds = currentMillis;
     } else if (previousFanState == 0 & (currentFanState == 1 || currentFanState == 2)) {
       fanOnTimeSeconds = 0;
-      // fanOnTimeSeconds = messageDuration;
-      // fanOnTimeSeconds = messageDuration/2;
     }
     if (currentFanState > 0) {        // بوق زدن فقط برای حالت های ON
       isWaitingForBeep = true;
       lastStateChangeTime = currentMillis;
       stateAtStartOfWait = currentFanState;
-      // beepsToMake = currentFanState;  // تعداد بوق ها برابر با وضعیت فعلی (1 یا 2)///////
     } else {
       fanOnTimeSeconds = 0;
     }
@@ -156,7 +154,7 @@ void loop() {
     fanOnTimeSeconds += loopDuration;
   }
 
-  ////
+// تابع منتظر برای ثابت شدن وضعیت بوق 
   if (isWaitingForBeep) {
     if (currentFanState != stateAtStartOfWait) {
       lastStateChangeTime = currentMillis;
@@ -202,58 +200,9 @@ void loop() {
   }
 
 
-
-  /////
-//   if (isWaitingForBeep && isTimeUp(lastStateChangeTime, 3000)) {
-// // 3. پس از گذشت 1 ثانیه، وضعیت را دوباره بررسی کن
-//     if(beepsToMake < 1){
-//       findBeepNum();
-//       Serial.print("beepsToMake: ");Serial.println(beepsToMake);
-//     }
-//     // if(currentFanState != beepsToMake)
-//     Serial.print("jdcnjdf ");
-//     if (isTimeUp(lastBeepTime, beepDuration)) {
-//       if (digitalRead(buzzerPin) == LOW) {
-//         // اگر بازر خاموش است، آن را روشن کن
-//         digitalWrite(buzzerPin, HIGH);
-//         Serial.println("6 is On");
-//       } else {
-//         // اگر بازر روشن است، آن را خاموش کن و تعداد بوق ها را کم کن
-//         digitalWrite(buzzerPin, LOW);
-//         beepsToMake--;
-//         Serial.println("beep decreased");
-//         if (beepsToMake <= 0) {
-//           // اگر بوق ها تمام شدند، فرآیند را متوقف کن
-//         Serial.println("isWaitingForBeep falsed");
-//           isWaitingForBeep = false;
-//           beepsToMake = 0; /////
-//         }
-//       }
-//     }
-//     // 5. پرچم انتظار را به false تغییر بده تا بوق دوباره تکرار نشود
-//     // isWaitingForBeep = false;
-//   }
-
   previousFanState = currentFanState;
 
 
-  // if (isBeeping) {
-  //   if (isTimeUp(lastBeepTime, beepDuration)) {
-  //     if (digitalRead(buzzerPin) == LOW) {
-  //       // اگر بازر خاموش است، آن را روشن کن
-  //       digitalWrite(buzzerPin, HIGH);
-  //     } else {
-  //       // اگر بازر روشن است، آن را خاموش کن و تعداد بوق ها را کم کن
-  //       digitalWrite(buzzerPin, LOW);
-  //       beepsToMake--;
-  //       if (beepsToMake <= 0) {
-  //         // اگر بوق ها تمام شدند، فرآیند را متوقف کن
-  //         isBeeping = false;
-  //         beepsToMake = 0; /////
-  //       }
-  //     }
-  //   }
-  // }
   if (isTimeUp(lastDisplayUpdateTime, 100)) {
     if (showMessage && (currentMillis - messageDisplayStartTime < messageDuration)) {
       // اگر هنوز در بازه 2 ثانیه نمایش پیام هستیم
@@ -271,7 +220,7 @@ void loop() {
       lcd.print("Temp: ");
       lcd.print(temperatureC, 2);  // نمایش دما با یک رقم اعشار
       lcd.print((char)223);        // کاراکتر درجه (°)
-      lcd.print("C");              // برای پاک کردن هر چیز قبلی
+      lcd.print("C  ");              // برای پاک کردن هر چیز قبلی
 
       totalDeviceOnTimeSeconds = currentMillis / 1000;
       fanNewOnTimeSeconds = fanOnTimeSeconds / 1000;
@@ -296,18 +245,20 @@ void loop() {
       lcd.print((fanNewOnTimeSeconds % 3600) / 60);  // دقیقه
       lcd.print(":");
       lcd.print(fanNewOnTimeSeconds % 60);  // ثانیه
+      // برای اینکه در نوشتن دقیقه جدید به باگ نخوریم
+      lcd.print("    ");
     }
   }
   // 6. نمایش دما و PWM روی سریال مانیتور (برای اشکال زدایی)
-  if (isTimeUp(lastSerialPrintTime, 1000)) {
-    Serial.print("Temp: ");
-    Serial.print(temperatureC);
-    Serial.print("C | Fan PWM: ");
-    Serial.print(fanPWMValue);
-    Serial.print(" | Fan On Time: ");
-    Serial.print(fanNewOnTimeSeconds);
-    Serial.println("s");
-  }
+  // if (isTimeUp(lastSerialPrintTime, 1000)) {
+  //   Serial.print("Temp: ");
+  //   Serial.print(temperatureC);
+  //   Serial.print("C | Fan PWM: ");
+  //   Serial.print(fanPWMValue);
+  //   Serial.print(" | Fan On Time: ");
+  //   Serial.print(fanNewOnTimeSeconds);
+  //   Serial.println("s");
+  // }
 }
 
 void printLooongStrings(const char* strings[], int index) {
