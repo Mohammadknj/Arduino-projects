@@ -17,10 +17,10 @@
 #include "FS.h"
 #include "SD_MMC.h"
 #include "Preferences.h"
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
-#include <WiFi.h>
+// #include <WiFiClientSecure.h>
+// #include <HTTPClient.h>
 #include <WebServer.h>
+#include <WiFi.h>
 
 // مهم: این خط برای کارکرد کتابخانه TinyGSM ضروری است
 #define TINY_GSM_MODEM_SIM800
@@ -90,7 +90,17 @@ void handleSave() {
 // ----------------------
 // توابع اصلی برنامه
 // ----------------------
-void takePhoto(int photoNumber, bool useFlasher) {
+void setCameraResolution(framesize_t size) {
+  sensor_t *s = esp_camera_sensor_get();
+  if (s) {
+    s->set_framesize(s, size);
+    Serial.printf("Camera resolution changed to %d.\n", size);
+  }
+}
+
+void takePhoto(int photoNumber, bool useFlasher, framesize_t resolution) {
+  setCameraResolution(resolution);
+  
   if (useFlasher) {
     digitalWrite(FLASHER_PIN, HIGH);
     delay(100);
@@ -252,7 +262,7 @@ void setup() {
   config.pin_reset = -1; 
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_VGA;
+  config.frame_size = FRAMESIZE_QVGA; // Default to QVGA
   config.jpeg_quality = 12;
   config.fb_count = 1;
   
@@ -332,12 +342,19 @@ void loop() {
     } else if (receivedSMS.indexOf("empty garbage") != -1) {
       deletePhotosFromSD();
     } else if (receivedSMS.indexOf("send pics") != -1) {
-      takePhoto(1, true);
+      takePhoto(1, true, FRAMESIZE_VGA);
       delay(1000);
-      takePhoto(2, true);
+      takePhoto(2, true, FRAMESIZE_VGA);
       delay(1000);
-      takePhoto(3, true);
+      takePhoto(3, true, FRAMESIZE_VGA);
       sendPhotosFromSD();
+    } else if (receivedSMS.indexOf("take good pics") != -1) {
+      Serial.println("Received 'take good pics' SMS. Taking 3 photos at UXGA resolution.");
+      for (int i = 1; i <= 3; i++) {
+        takePhoto(i, true, FRAMESIZE_UXGA);
+        delay(1000);
+      }
+      setCameraResolution(FRAMESIZE_QVGA); // Return to default resolution
     } else if (receivedSMS.indexOf("continue") != -1) {
       Serial.println("Received 'continue' SMS. System will go back to sleep.");
     }
@@ -350,14 +367,14 @@ void loop() {
     // PIR trigger logic for Away Mode, now also checks the switch state
     if (switch_state == HIGH) {
         Serial.println("System activated by PIR! Executing Away mode protocol.");
-        takePhoto(1, false);
+        takePhoto(1, false, FRAMESIZE_QVGA);
         delay(1000);
         digitalWrite(LAMP_RELAY_PIN, LOW);
-        takePhoto(2, false);
+        takePhoto(2, false, FRAMESIZE_QVGA);
         makeCallAndSendSMS();
-        takePhoto(3, false);
+        takePhoto(3, false, FRAMESIZE_QVGA);
         delay(1000);
-        takePhoto(4, false);
+        takePhoto(4, false, FRAMESIZE_QVGA);
         sendPhotosFromSD();
         
         // Wait for "stop" SMS or timeout
