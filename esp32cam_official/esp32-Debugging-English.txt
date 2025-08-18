@@ -1,0 +1,616 @@
+// Security system with camera
+// Camera: esp32 cam normal
+// GSM: SIM800L
+// Sensor: HC-SR501 PIR
+// Micro SD
+// Relay: 5v Active-Low
+// Adaptor: 5v at least 2Amper
+// rocker key and USB-to-TTL
+
+// Libraries
+#include "esp_camera.h"
+#include "FS.h"
+#include "SD_MMC.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+// #include <SoftwareSerial.h>
+#define TINY_GSM_MODEM_SIM800
+#include <TinyGsmClient.h>
+#include "time.h"
+#include <vector>
+#include <Preferences.h>
+
+using namespace std;
+// PINS
+#define PIR_INT_PIN 4    // PIR Interrupt External pull-down HIGH-Active
+#define RING_INT_PIN 12  // SIM800L RING Interrupt LOW-Active
+#define GSM_RX_PIN 13    // SIM800L RX  (SEND DATA)
+#define GSM_TX_PIN 16    // SIM800L TX  (RECIEVE DATA)
+
+Preferences prefs;
+// BALE BOT SETTINGS
+String BALE_TOKEN = "YOUR_BALE_BOT_TOKEN";
+String BALE_CHAT_ID = "YOUR_CHAT_ID";
+
+// WIFI SETTINGS
+String ssid = "YOUR_WIFI_SSID";
+String password = "YOUR_WIFI_PASSWORD";
+
+String PHONE_NUMBER = "+989123456789";
+// SIM800L SETTINGS
+// SoftwareSerial gsmSerial(GSM_RX_PIN, GSM_TX_PIN);
+HardwareSerial gsmSerial(2);  // SIM800L UART2
+TinyGsm modem(gsmSerial);
+
+// NTP SETTINGS
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 12600;  // UTC+3:30 (IRAN)
+const int daylightOffset_sec = 0;  //IRAN doesn't have DST
+
+String getCurrentDateTime() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Error getting time!");
+    return "";
+  }
+  char buffer[20];
+  strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &timeinfo);
+  return String(buffer);
+}
+
+void setCameraResolution(framesize_t size) {
+  sensor_t* s = esp_camera_sensor_get();
+  if (s) {
+    s->set_framesize(s, size);
+    Serial.printf("Camera resolution changed to %d.\n", size);
+  } else {
+    Serial.println("Error accessing camera sensor!");
+  }
+}
+
+int photoNumber = 1;
+String photoDate = "";
+bool lastPhotoIsDateNamed = false;
+vector<String> lastPhotoNames;
+
+void takePhoto(framesize_t resolution) {
+  setCameraResolution(resolution);
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Error taking photo!");
+    return;
+  }
+  String timestamp = getCurrentDateTime();
+  if (timestamp == "") {
+    lastPhotoIsDateNamed = false;
+    timestamp = String(photoNumber);  // In case of error, use the number.
+  }
+  photoNumber++;
+  String filename = "/capture_" + timestamp + ".jpg";
+  photoDate = timestamp;
+  lastPhotoIsDateNamed = true;
+  lastPhotoNames.push_back(filename);
+  File file = SD_MMC.open(filename.c_str(), FILE_WRITE);
+  if (file) {
+    file.write(fb->buf, fb->len);
+    file.close();
+    Serial.printf("Photo %s Saved on SD.\n", filename.c_str());
+  } else {
+    Serial.println("Error opening SD file!");
+  }
+  esp_camera_fb_return(fb);
+}
+
+String findLastPhoto() {
+  File dir = SD_MMC.open("/");
+  String lastFile = "";
+  time_t lastTime = 0;
+  while (File entry = dir.openNextFile()) {
+    String name = entry.name();
+    if (name.startsWith("/capture_") && name.endsWith(".jpg")) {
+      // Extracting date from file name (format: capture_YYYYMMDD_HHMMSS.jpg)
+      String timestampStr = name.substring(9, name.length() - 4);  // deleting /capture_ & .jpg
+      struct tm timeinfo = { 0 };
+      if (sscanf(timestampStr.c_str(), "%4d%2d%2d_%2d%2d%2d",
+                 &timeinfo.tm_year, &timeinfo.tm_mon, &timeinfo.tm_mday,
+                 &timeinfo.tm_hour, &timeinfo.tm_min, &timeinfo.tm_sec)
+          == 6) {
+        timeinfo.tm_year -= 1900;  // Convert to year from 1900
+        timeinfo.tm_mon -= 1;      // Month from 0 to 11
+        time_t fileTime = mktime(&timeinfo);
+        if (fileTime > lastTime) {
+          lastTime = fileTime;
+          lastFile = name;
+        }
+      }
+    }
+    entry.close();
+  }
+  dir.close();
+  if (lastFile == "") {
+    Serial.println("No photos found!");
+  } else {
+    Serial.printf("last photo: %s\n", lastFile.c_str());
+  }
+  return lastFile;
+}
+
+void sendMessageToBale(String message) {
+  // Connecting to Wi-Fi
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(ssid, password);
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+      delay(500);
+      attempts++;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Error connecting to WiFi!");
+      return;
+    }
+  }
+
+  // Send message to BALE
+  HTTPClient http;
+  String url = "https://tapi.bale.ai/bot" + String(BALE_TOKEN) + "/sendMessage?chat_id=" + String(BALE_CHAT_ID) + "&text=" + message;
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode == HTTP_CODE_OK) {
+    Serial.println("Message successfully sent to bale!");
+  } else {
+    Serial.printf("Error sending message, HTTP code: %d\n", httpCode);
+  }
+  http.end();
+  WiFi.disconnect(true);  // Turn off Wi-Fi to save money
+}
+
+void sendPhotoToBale() {
+  // Connecting to Wi-Fi
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(ssid, password);
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+      delay(500);
+      attempts++;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Error connecting to WiFi");
+      return;
+    }
+  }
+  for (int i = 0; i < 3; i++) {
+    String filename = lastPhotoNames[i];
+    // String filename = "/capture_";
+    // filename += lastPhotoIsDateNamed ? photoDate : String(photoNumber);
+    // filename += ".jpg";
+    // Open photo file from SD card
+    File file = SD_MMC.open(filename.c_str());
+    if (!file) {
+      Serial.println("Error opening file!");
+      return;
+    }
+
+    // Reading file into buffer
+    size_t fileSize = file.size();
+    uint8_t* buffer = (uint8_t*)malloc(fileSize);
+    if (!buffer) {
+      Serial.println("Error allocating memory for photo!");
+      file.close();
+      return;
+    }
+    file.read(buffer, fileSize);
+    file.close();
+
+    // Preparing the HTTP request
+    HTTPClient http;
+    String url = "https://tapi.bale.ai/bot" + String(BALE_TOKEN) + "/sendPhoto?chat_id=" + String(BALE_CHAT_ID) + "&caption=" + filename;
+    http.begin(url);
+    http.addHeader("Content-Type", "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW");
+
+    // Preparing the request body
+    String body = "------WebKitFormBoundary7MA4YWxkTrZu0gW\r\n";
+    body += "Content-Disposition: form-data; name=\"photo\"; filename=\"" + filename + "\"\r\n";
+    body += "Content-Type: image/jpeg\r\n\r\n";
+
+    size_t bodyLength = body.length();
+    size_t totalLength = bodyLength + fileSize + String("\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--\r\n").length();
+
+    http.addHeader("Content-Length", String(totalLength));
+    int httpCode = http.POST((uint8_t*)body.c_str(), bodyLength);
+    http.POST(buffer, fileSize);
+    http.POST((uint8_t*)"\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--\r\n", String("\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--\r\n").length());
+
+    // checking answer
+    // int httpCode = http.GET();
+    if (httpCode == HTTP_CODE_OK) {
+      Serial.println("The photo was successfully sent to bale!");
+    } else {
+      Serial.printf("Error sending message, HTTP code: %d\n", httpCode);
+    }
+    free(buffer);
+    http.end();
+  }
+  lastPhotoNames.clear();
+  WiFi.disconnect(true);  // Turn off Wi-Fi to save money
+}
+
+void sendSMSToPhone(String message) {
+  if (!modem.isNetworkConnected()) {
+    Serial.println("SIM800L is not connected to network!");
+    return "";
+  }
+  // sending SMS by SIM800L
+  if (modem.sendSMS(PHONE_NUMBER, message)) {
+    Serial.println("SMS sent successfully!");
+  } else {
+    Serial.println("Error sending SMS!");
+  }
+}
+
+void makeCall() {
+  if (!modem.isNetworkConnected()) {
+    Serial.println("SIM800L is not connected to network!");
+    return "";
+  }
+  Serial.println("Making a call...");
+  if (modem.callNumber(PHONE_NUMBER)) {
+    Serial.println("Call established!");
+    delay(5000);
+    if (modem.callHangup()) {
+      Serial.println("The call was disconnected.");
+    } else {
+      Serial.println("Error disconnecting call!");
+    }
+  } else {
+    Serial.println("Error making call!");
+  }
+}
+
+String readSMS() {
+  if (!modem.isNetworkConnected()) {
+    Serial.println("SIM800L is not connected to network!");
+    return "";
+  }
+  Serial.println("Checking received SMS messages...");
+  String sms = "";
+  modem.sendAT("AT+CMGF=1");  // Setting text mode
+  modem.waitResponse(500);
+  if (gsmSerial.available()) {
+    modem.sendAT("AT+CMGR=1");  // Reading SMS in position 1
+    if (modem.waitResponse(1000, sms)) {
+      if (sms.indexOf("+CMGR:") != -1) {
+        int smsStart = sms.indexOf("\",\"") + 3;
+        int smsEnd = sms.indexOf("\r\n", smsStart);
+        if (smsEnd == -1) smsEnd = sms.length();
+        sms = sms.substring(smsStart, smsEnd);
+        sms.trim();
+        Serial.printf("Received SMS: %s\n", sms.c_str());
+        modem.sendAT("AT+CMGD=1,4");  // deleting all SMSs
+        Serial.println("The text messages were deleted.");
+      } else {
+        Serial.println("No text messages were received.");
+      }
+    } else {
+      Serial.println("Error reading SMS!");
+    }
+  } else {
+    Serial.println("There is no data in the series.");
+  }
+  return sms;
+}
+
+void waitForStopSMS() {
+  unsigned long startTime = millis();
+  const unsigned long timeout = 120000;
+
+  Serial.println("Waiting for 'stop' SMS for 2 minutes...");
+  while (millis() - startTime < timeout) {
+    if (gsmSerial.available()) {
+      String sms = readSMS();
+      if (sms.length() > 0) {
+        sms.toLowerCase();
+        if (sms.indexOf("stop") != -1) {
+          Serial.println("Received 'stop' SMS. Lamp turned off.");
+          return;
+        }
+      }
+      delay(100);
+    }
+    Serial.println("didn't 'stop' SMS. Lamp turned off.");
+  }
+}
+
+void emptyGarbage() {
+  Serial.println("Delete all images from SD card...");
+  File dir = SD_MMC.open("/");
+  int deleteCount = 0;
+  while (File entry = dir.openNextFile()) {
+    String name = entry.name();
+    if (name.startsWith("/capture_") && name.endsWith(".jpg")) {
+      entry.close();
+      if (SD_MMC.remove(name.c_str())) {
+        Serial.printf("file %s deleted\n", name.c_str());
+        deleteCount++;
+      } else {
+        Serial.printf("Error while deleting %s!\n", name.c_str());
+      }
+    } else {
+      entry.close();
+    }
+  }
+  dir.close();
+  Serial.printf("%d The image was successfully deleted.\n", deleteCount);
+  lastPhotoNames.clear();
+}
+
+void reconnectWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(ssid.c_str(), password.c_str());
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+      delay(500);
+      attempts++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("WiFi connected");
+    } else {
+      Serial.println("Error while WiFi!");
+    }
+  }
+}
+
+void changingPhoneNumber(String sms) {
+  String numberPart = sms.substring(sms.indexOf("phone number") + 12);
+  numberPart.trim();
+  if (numberPart.length() == 10 && numberPart.toInt() != 0) {
+    if (numberPart.startsWith("0")) {
+      numberPart = "+98" + numberPart.substring(1);  // Zero removed and +98 added
+      PHONE_NUMBER = numberPart;
+      prefs.putString("phone_number", PHONE_NUMBER);
+      Serial.printf("PHONE_NUMBER set to %s \n", PHONE_NUMBER.c_str());
+      sendSMSToPhone("phone number changed to "+ String(PHONE_NUMBER));
+    } else {
+      Serial.println("Invalid number! Must start with 0.");
+    }
+  } else if (numberPart.length() == 12 && numberPart.startsWith("+98") && numberPart.substring(3).toInt() != 0) {
+    PHONE_NUMBER = numberPart;
+    prefs.putString("phone_number", PHONE_NUMBER);
+    Serial.printf("PHONE_NUMBER set to %s \n", PHONE_NUMBER.c_str());
+    sendSMSToPhone("phone number changed to "+ String(PHONE_NUMBER));
+  } else if (numberPart.length() == 9 && numberPart.startsWith("9") && numberPart.toInt() != 0) {
+    numberPart = "+98" + numberPart;
+    PHONE_NUMBER = numberPart;
+    prefs.putString("phone_number", PHONE_NUMBER);
+    Serial.printf("PHONE_NUMBER set to %s \n", PHONE_NUMBER.c_str());
+    sendSMSToPhone("phone number changed to "+ String(PHONE_NUMBER));
+  } else {
+    Serial.println("Invalid number! Must be 10 digits (with 0), 12 digits (with +98) or 9 digits (with 9).");
+  }
+}
+
+void changingSSID(String sms) {
+  String ssidPart = sms.substring(sms.indexOf("ssid") + 4);
+  ssidPart.trim();
+  if (ssidPart.length() > 0) {
+    ssid = ssidPart;
+    prefs.putString("wifi_ssid", ssid);
+    Serial.printf("ssid set to %s \n", ssid.c_str());
+    sendSMSToPhone("wifi name changed to "+ String(ssid));
+    reconnectWiFi();
+  } else {
+    Serial.println("Invalid WiFi name!");
+  }
+}
+
+void changingPASS(String sms) {
+  String passwordPart = sms.substring(sms.indexOf("password") + 8);
+  passwordPart.trim();
+  if (passwordPart.length() > 0) {
+    password = passwordPart;
+    prefs.putString("wifi_password", password);
+    Serial.printf("password set to %s \n", password.c_str());
+    sendSMSToPhone("password changed to "+ String(password));
+    reconnectWiFi();
+  } else {
+    Serial.println("Invalid WiFi pass!");
+  }
+}
+
+void changingTOKEN(String sms) {
+  String tokenPart = sms.substring(sms.indexOf("bale token") + 10);
+  tokenPart.trim();
+  if (tokenPart.length() > 0) {
+    BALE_TOKEN = tokenPart;
+    prefs.putString("bale_token", BALE_TOKEN);
+    Serial.printf("BALE_TOKEN set to %s \n", BALE_TOKEN.c_str());
+    sendSMSToPhone("Bale token changed to "+ String(BALE_TOKEN));
+  } else {
+    Serial.println("Invalid bale token");
+  }
+}
+
+void changingCHAT_ID(String sms) {
+  String chatIdPart = sms.substring(sms.indexOf("chat id") + 7);
+  chatIdPart.trim();
+  if (chatIdPart.length() > 0) {
+    BALE_CHAT_ID = chatIdPart;
+    prefs.putString("bale_chat_id", BALE_CHAT_ID);
+    Serial.printf("BALE_CHAT_ID set to %s \n", BALE_CHAT_ID.c_str());
+    sendSMSToPhone("Bale chat id changed to "+ String(BALE_CHAT_ID));
+  } else {
+    Serial.println("Invalid bale chat_ID");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Starting the system...");
+
+  // starting Preferences with namespace
+  prefs.begin("my_app", false);
+  // Retrieve values from NVS or use default
+  PHONE_NUMBER = prefs.getString("phone_number", PHONE_NUMBER);
+  ssid = prefs.getString("wifi_ssid", ssid);
+  password = prefs.getString("wifi_password", password);
+  BALE_TOKEN = prefs.getString("bale_token", BALE_TOKEN);
+  BALE_CHAT_ID = prefs.getString("bale_chat_id", BALE_CHAT_ID);
+
+  Serial.println("Setting values:");
+  Serial.printf("PHONE_NUMBER: %s\n", PHONE_NUMBER.c_str());
+  Serial.printf("ssid: %s\n", ssid.c_str());
+  Serial.printf("password: %s\n", password.c_str());
+  Serial.printf("BALE_TOKEN: %s\n", BALE_TOKEN.c_str());
+  Serial.printf("BALE_CHAT_ID: %s\n", BALE_CHAT_ID.c_str());
+
+  // Setting interrupt PINs:
+  pinMode(PIR_INT_PIN, INPUT);  // use pull-down resistor *********************important****************
+  pinMode(RING_INT_PIN, INPUT_PULLUP);
+
+  // setting SIM800L with HardwareSerial
+  gsmSerial.begin(9600, SERIAL_8N1, GSM_RX_PIN, GSM_TX_PIN);  // RX=GPIO13, TX=GPIO16
+  // setting SIM800L with SoftwareSerial
+  // gsmSerial.begin(9600);
+  Serial.println("setting SIM800L...");
+  if (!modem.restart()) {
+    Serial.println("Error while SIM800L!");
+    return;
+  }
+  Serial.println("SIM800L set.");
+
+  if (psramFound()) {
+    Serial.println("PSRAM enabled.");
+  } else {
+    Serial.println("PSRAM Disabled! High resolutions may not work.");
+  }
+
+  // camera setting
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = 5;
+  config.pin_d1 = 18;
+  config.pin_d2 = 19;
+  config.pin_d3 = 21;
+  config.pin_d4 = 36;
+  config.pin_d5 = 39;
+  config.pin_d6 = 34;
+  config.pin_d7 = 35;
+  config.pin_xclk = 0;
+  config.pin_pclk = 22;
+  config.pin_vsync = 25;
+  config.pin_href = 23;
+  config.pin_sscb_sda = 26;
+  config.pin_sscb_scl = 27;
+  config.pin_pwdn = 32;
+  config.pin_reset = -1;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA;  // 320x240
+  config.jpeg_quality = 12;            // JPEG quality
+  config.fb_count = 1;
+
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  Serial.println("NTP time set");
+
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Error while setting camera: 0x%x\n", err);
+    return;
+  }
+
+  // Setting the SD card to 1-bit mode
+  if (!SD_MMC.begin("/sdcard", true)) {
+    Serial.println("Error connecting SD card!");
+    return;
+  }
+  Serial.println("SD card connected succesfully!");
+
+  // setting Deep Sleep
+  // EXT0 HIGH-Active
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)PIR_INT_PIN, 1);  // 1 = HIGH
+  // EXT1 LOW-Active
+  esp_sleep_enable_ext1_wakeup((1ULL << RING_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+
+  Serial.println("system is ready. going to deep sleep zzz....");
+  esp_deep_sleep_start();
+}
+
+void loop() {
+  delay(10);
+
+  // checking interrupt
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+    // waking up by PIR (HIGH)
+    Serial.println("system waked up by PIR");
+    sendMessageToBale("Warning! movement detected");
+    sendSMSToPhone("Warning! movement detected");
+    takePhoto(FRAMESIZE_QVGA);
+    delay(1000);
+    takePhoto(FRAMESIZE_QVGA);
+    makeCall();
+    delay(1000);
+    takePhoto(FRAMESIZE_QVGA);
+    delay(1000);
+    sendPhotoToBale();
+
+    waitForStopSMS();
+  } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
+    // waking up by RING (LOW)
+    sendMessageToBale("system waked up by sim800 RING");
+    Serial.println("System woke up by GSM RING signal. Checking for SMS...");
+    delay(500);
+
+    // Set SMS mode to text mode
+    modem.sendAT("AT+CMGF=1");
+    modem.waitResponse(500);
+
+    Serial.println("checking SMS inbox");
+    String sms = readSMS();
+    if (sms.length() > 0) {
+      sms.toLowerCase();
+      if (sms.indexOf("empty garbage") != -1) {
+        emptyGarbage();
+      } else if (sms.indexOf("send pics") != -1) {
+        takePhoto(FRAMESIZE_VGA);
+        delay(1500);
+        takePhoto(FRAMESIZE_VGA);
+        delay(1500);
+        takePhoto(FRAMESIZE_VGA);
+        sendPhotoToBale();
+      } else if (sms.indexOf("take good pics") != -1) {
+        Serial.println("Received 'take good pics' SMS. Taking 3 photos at SXGA resolution.");
+        for (int i = 1; i <= 3; i++) {
+          takePhoto(FRAMESIZE_SXGA);
+          delay(3000);
+        }
+        setCameraResolution(FRAMESIZE_QVGA);  // Return to default resolution
+      } else if (sms.indexOf("change info") != -1) {
+        Serial.println("Received 'change info' SMS. getting informations to set sth.");
+        if (sms.indexOf("phone number") != -1) {
+          changingPhoneNumber(sms);
+        } else if (sms.indexOf("ssid") != -1) {
+          changingSSID(sms);
+        } else if (sms.indexOf("password") != -1) {
+          changingPASS(sms);
+        } else if (sms.indexOf("bale token") != -1) {
+          changingTOKEN(sms);
+        } else if (sms.indexOf("chat id") != -1) {
+          changingCHAT_ID(sms);
+        }
+      }
+    } else {
+      Serial.println("No text messages were received.");
+    }
+  } else {
+    Serial.println("interrupt source didn't detect");
+  }
+
+  delay(1000);
+  Serial.println("returning to Deep Sleep...");
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)PIR_INT_PIN, 1);
+  esp_sleep_enable_ext1_wakeup((1ULL << RING_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+  esp_deep_sleep_start();
+}
